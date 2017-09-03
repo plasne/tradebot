@@ -1,0 +1,22 @@
+{
+  "name": "tradebot",
+  "version": "1.0.0",
+  "description": "",
+  "main": "bot.js",
+  "dependencies": {
+    "commander": "^2.11.0",
+    "config": "^1.26.2",
+    "express": "^4.15.4",
+    "import-export": "^1.0.1",
+    "mysql": "^2.14.1",
+    "node-ipc": "^9.1.1",
+    "request": "^2.81.0",
+    "ws": "^3.1.0"
+  },
+  "devDependencies": {},
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC"
+}
