@@ -6,12 +6,18 @@ const ipc = require("node-ipc");
 const mysql = require("mysql");
 const request = require("request");
 
+// libraries
+const RollingMidpointStrategy = require("./lib/RollingMidpointStrategy.js");
+const SimulationManager = require("./lib/SimulationManager.js");
+const Window = require("./lib/Window.js");
+
 // create a connection pool to the database
-const pool = mysql.createPool({
+global.pool = mysql.createPool({
     host: config.get("db.host"),
     port: config.get("db.port"),
     user: config.get("db.user"),
-    password: config.get("db.password")
+    password: config.get("db.password"),
+    database: config.get("db.name")
 });
 
 // create a function that can process synchronously
@@ -36,6 +42,7 @@ cmd
     .option("--populate <value>", "populate the database with a specified dataset")
     .option("--status", "gets the feed status for all coins from a running bot")
     .option("--debug", "toggles the debug status of the running bot")
+    .option("--score", "scores all the models on the last 3 months of data")
     .parse(process.argv);
 
 // default the database
@@ -50,9 +57,9 @@ if (cmd.hasOwnProperty("init")) {
 
 // function to run a single query command
 const run = (query, values) => new Promise((resolve, reject) => {
-    pool.query(query, values, (error, results, fields) => {
+    global.pool.query(query, values, (error, results, fields) => {
         if (!error) {
-            resolve();
+            resolve(results);
         } else {
             reject(error);
         }
@@ -67,7 +74,7 @@ if (cmd.hasOwnProperty("create") && cmd.db) {
         yield run(`CREATE DATABASE ${cmd.db};`);
         yield run(`USE ${cmd.db};`);
         yield run("CREATE TABLE coinprice (id INT NOT NULL PRIMARY KEY AUTO_INCREMENT, ts TIMESTAMP, code VARCHAR(8), price DECIMAL(13,4));");
-        pool.end();
+        global.pool.end();
         console.log("database and tables created.");
     });
 
@@ -121,7 +128,6 @@ if (cmd.populate && cmd.db) {
 
     // run the job
     sync(function* () {
-        yield run(`USE ${cmd.db};`);
         const coins = [
             { code: "ETH", url: `https://ethereumprice.org/wp-content/themes/theme/inc/exchanges/json.php?cur=ethusd&ex=waex&time=${period}` },
             { code: "BTC", url: `https://ethereumprice.org/wp-content/themes/theme/inc/exchanges/json.php?cur=btcusd&ex=waex&time=${period}` }
@@ -177,5 +183,49 @@ if (cmd.hasOwnProperty("debug")) {
         console.log(debug);
     }, error => {
         console.error(error);
+    });
+}
+
+// trains and scores all the models
+if (cmd.hasOwnProperty("score")) {
+    sync(function* () {
+
+        let days = 30;
+
+        const model1 = new RollingMidpointStrategy({
+            name: "willy_coyote",
+            code: "ETH",
+            think: 4 * 60 * 60 * 1000,
+            consider: 4 * 60 * 60 * 1000,
+            a: 1,
+            b: 0,
+            c: 0,
+            d: 0,
+            e: 0,
+            range: 10
+        });
+        const start = new Date(new Date() - days * 24 * 60 * 60 * 1000);
+        const end = new Date();
+        yield model1.cache(start, end);
+        const simulator = new SimulationManager({
+            code: "ETH",
+            funds: 33000,
+            fee: 0.0025,
+            strategy: model1
+        });
+        const window = new Window({
+            code: "ETH",
+            start: start,
+            end: end
+        });
+        const pricesInTime = yield window.load();
+        for (let priceInTime of pricesInTime) {
+            yield simulator.update(priceInTime);
+        }
+        const calc = simulator.calc;
+        console.log("profit: " + calc.profit + " (g:" + calc.good + " / b:" + calc.bad + "); per week: " + calc.profit / days * 7);
+
+        global.pool.end();
+    
     });
 }

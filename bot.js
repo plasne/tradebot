@@ -11,6 +11,9 @@
 // support multi-region
 // record 1 day prices from a web service as a backup
 
+// add a strategy around weekends and holidays
+// add the mode detection
+
 // references
 const config = require("config");
 const ipc = require("node-ipc");
@@ -21,7 +24,8 @@ const crypto = require("crypto");
 const mysql = require("mysql");
 
 // libraries
-const DayTrade = require("./lib/daytrade.js");
+const Window = require("./lib/Window.js");
+const DayTradeLimit = require("./lib/RollingMidpointStrategy.js");
 
 // globals
 let debug = false;
@@ -31,7 +35,7 @@ const app = express();
 app.use( express.static("www") );
 
 // create a connection pool to the database
-const pool = mysql.createPool({
+global.pool = mysql.createPool({
     host: config.get("db.host"),
     port: config.get("db.port"),
     user: config.get("db.user"),
@@ -52,92 +56,6 @@ const sync = fn => {
     };
     loop(iterator.next());
 };
-
-class RollingWindow {
-
-    _calcFromMemory() {
-        const self = this;
-        return new Promise(resolve => {
-            const now = new Date().getTime();
-
-            let sum = 0;
-            const output = {
-                volume: 0,
-                min: Number.MAX_SAFE_INTEGER,
-                max: Number.MIN_SAFE_INTEGER,
-                first: Number.MIN_SAFE_INTEGER,
-                last: Number.MIN_SAFE_INTEGER
-            };
-
-            let bad = 0;
-            self.values.forEach(value => {
-                if (value.ts + self.period >= now) {
-                    sum += value.v;
-                    output.volume++;
-                    if (value.v < output.min) output.min = value.v;
-                    if (value.v > output.max) output.max = value.v;
-                    if (output.first == Number.MIN_SAFE_INTEGER) output.first = value.v;
-                    output.last = value.v;
-                } else {
-                    bad++;
-                }
-            });
-
-            output.avg = (sum / output.volume);
-            output.flux = ((output.max - output.min) / output.avg * 100).toFixed(2) + "%";
-            output.chg = ((output.last - output.first) / output.first * 100).toFixed(2) + "%";
-
-            if (bad > 0) {
-                self.values.splice(0, bad);
-            }
-
-            resolve(output);
-        });
-    }
-
-    _calcFromDatabase() {
-        const self = this;
-        return new Promise((resolve, reject) => {
-            const end = new Date();
-            const start = new Date(end - self.period); 
-            pool.query("SELECT COUNT(*) as volume, AVG(price) as avg, MIN(price) as min, MAX(price) as max, (SELECT f.price FROM coinprice f WHERE f.ts BETWEEN ? AND ? AND f.code=? ORDER BY f.ts ASC LIMIT 1) as first, (SELECT l.price FROM coinprice l WHERE l.ts BETWEEN ? AND ? AND l.code=? ORDER BY l.ts DESC LIMIT 1) as last FROM coinprice WHERE ts BETWEEN ? AND ? AND code=?;",
-            [ start, end, self.code, start, end, self.code, start, end, self.code ],
-            (error, results, fields) => {
-                if (!error) {
-                    const output = results[0];
-                    output.flux = ((output.max - output.min) / output.avg * 100).toFixed(2) + "%";
-                    output.chg = ((output.last - output.first) / output.first * 100).toFixed(2) + "%";
-                    resolve(output);
-                } else {
-                    reject(error);
-                }
-            });
-        });
-    }
-
-    calc() {
-        const self = this;
-        if (self.isInMemory) {
-            return self._calcFromMemory();
-        } else {
-            return self._calcFromDatabase();
-        }
-    }
-
-    constructor(code, name, period, isInMemory) {
-        const self = this;
-
-        // assign variables
-        self.code = code;
-        self.name = name;
-        self.values = [];
-        self.period = period;
-        self.isInMemory = isInMemory;
-        self.isFull = !isInMemory; // assume the database is full
-
-    }
-
-}
 
 class Coin {
 
@@ -177,10 +95,13 @@ class Coin {
                             const now = new Date().getTime();
                             self.windows.forEach(window => {
                                 if (window.isInMemory) {
+
+                                    // NOTE: change this to go through a method
                                     window.values.push({
                                         ts: now,
-                                        v: parseFloat(event.price)
+                                        price: parseFloat(event.price)
                                     });
+
                                 }
                             });
 
@@ -230,18 +151,75 @@ class Coin {
         // assign variables
         self.code = code;
         self.windows = [
-            new RollingWindow(code, "1 min", 1 * 60 * 1000, true),
-            new RollingWindow(code, "5 min", 5 * 60 * 1000, true),
-            new RollingWindow(code, "15 min", 15 * 60 * 1000, true),
-            new RollingWindow(code, "30 min", 30 * 60 * 1000, true),
-            new RollingWindow(code, "1 hour", 1 * 60 * 60 * 1000, false),
-            new RollingWindow(code, "4 hour", 4 * 60 * 60 * 1000, false),
-            new RollingWindow(code, "8 hour", 8 * 60 * 60 * 1000, false),
-            new RollingWindow(code, "24 hour", 24 * 60 * 60 * 1000, false),
-            new RollingWindow(code, "3 day", 3 * 24 * 60 * 60 * 1000, false),
-            new RollingWindow(code, "7 day", 7 * 24 * 60 * 60 * 1000, false),
-            new RollingWindow(code, "30 day", 30 * 24 * 60 * 60 * 1000, false),
-            new RollingWindow(code, "90 day", 90 * 24 * 60 * 60 * 1000, false)
+            new Window({
+                name: "1 min",
+                code: code,
+                inMemory: true,
+                isRolling: true,
+                period: 1 * 60 * 1000
+            }),
+            new Window({
+                name: "5 min",
+                code: code,
+                inMemory: true,
+                isRolling: true,
+                period: 5 * 60 * 1000
+            }),
+            new Window({
+                name: "15 min",
+                code: code,
+                inMemory: true,
+                isRolling: true,
+                period: 15 * 60 * 1000
+            }),
+            new Window({
+                name: "1 hour",
+                code: code,
+                isRolling: true,
+                period: 1 * 60 * 60 * 1000
+            }),
+            new Window({
+                name: "4 hour",
+                code: code,
+                isRolling: true,
+                period: 4 * 60 * 60 * 1000
+            }),
+            new Window({
+                name: "8 hour",
+                code: code,
+                isRolling: true,
+                period: 8 * 60 * 60 * 1000
+            }),
+            new Window({
+                name: "24 hour",
+                code: code,
+                isRolling: true,
+                period: 24 * 60 * 60 * 1000
+            }),
+            new Window({
+                name: "3 day",
+                code: code,
+                isRolling: true,
+                period: 3 * 24 * 60 * 60 * 1000
+            }),
+            new Window({
+                name: "7 day",
+                code: code,
+                isRolling: true,
+                period: 7 * 24 * 60 * 60 * 1000
+            }),
+            new Window({
+                name: "30 day",
+                code: code,
+                isRolling: true,
+                period: 30 * 24 * 60 * 60 * 1000
+            }),
+            new Window({
+                name: "90 day",
+                code: code,
+                isRolling: true,
+                period: 90 * 24 * 60 * 60 * 1000
+            })
         ];
 
     }
@@ -312,7 +290,7 @@ function recordPrices() {
                 console.error("There is not a price to record " + new Date());
                 return;
             }
-            pool.query("INSERT INTO coinprice SET ?;", {
+            global.pool.query("INSERT INTO coinprice SET ?;", {
                 code: coin.code,
                 price: calc.last
             }, (error, results, fields) => {
@@ -388,6 +366,3 @@ ipc.serve(() => {
     });
 });
 ipc.server.start();
-
-const dt = new DayTrade();
-console.log("mode is " + dt.mode);
