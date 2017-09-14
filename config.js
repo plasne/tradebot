@@ -8,6 +8,8 @@ const request = require("request");
 
 // libraries
 const RollingMidpointStrategy = require("./lib/RollingMidpointStrategy.js");
+const RapidChangeStrategy = require("./lib/RapidChangeStrategy.js");
+const TrendingStrategy = require("./lib/TrendingStrategy.js");
 const SimulationManager = require("./lib/SimulationManager.js");
 const Window = require("./lib/Window.js");
 
@@ -42,6 +44,7 @@ cmd
     .option("--populate <value>", "populate the database with a specified dataset")
     .option("--status", "gets the feed status for all coins from a running bot")
     .option("--debug", "toggles the debug status of the running bot")
+    .option("--generate <value>", "populates the database with a variety of strategies")
     .option("--score", "scores all the models on the last 3 months of data")
     .parse(process.argv);
 
@@ -56,8 +59,9 @@ if (cmd.hasOwnProperty("init")) {
 }
 
 // function to run a single query command
-const run = (query, values) => new Promise((resolve, reject) => {
-    global.pool.query(query, values, (error, results, fields) => {
+const run = (query, values, db) => new Promise((resolve, reject) => {
+    const connection = (db || global.pool);
+    connection.query(query, values, (error, results, fields) => {
         if (!error) {
             resolve(results);
         } else {
@@ -69,12 +73,21 @@ const run = (query, values) => new Promise((resolve, reject) => {
 // create the database and schema
 if (cmd.hasOwnProperty("create") && cmd.db) {
 
+    // connect to the database server
+    const db = mysql.createPool({
+        host: config.get("db.host"),
+        port: config.get("db.port"),
+        user: config.get("db.user"),
+        password: config.get("db.password")
+    });
+
     // run all commands
     sync(function* () {
-        yield run(`CREATE DATABASE ${cmd.db};`);
-        yield run(`USE ${cmd.db};`);
-        yield run("CREATE TABLE coinprice (id INT NOT NULL PRIMARY KEY AUTO_INCREMENT, ts TIMESTAMP, code VARCHAR(8), price DECIMAL(13,4));");
-        global.pool.end();
+        yield run(`CREATE DATABASE ${cmd.db};`, null, db);
+        yield run(`USE ${cmd.db};`, null, db);
+        yield run("CREATE TABLE coinprice (id INT NOT NULL PRIMARY KEY AUTO_INCREMENT, ts TIMESTAMP, code VARCHAR(8), price DECIMAL(13,4));", null, db);
+        yield run("CREATE TABLE models (id INT NOT NULL PRIMARY KEY AUTO_INCREMENT, code VARCHAR(8), name VARCHAR(255), strategies TEXT, score INT, ts TIMESTAMP)", null, db);
+        db.end();
         console.log("database and tables created.");
     });
 
@@ -186,33 +199,98 @@ if (cmd.hasOwnProperty("debug")) {
     });
 }
 
+// generates a bunch of models
+if (cmd.generate) {
+    sync(function* () {
+
+        // get all currently generated models
+        const rows = yield run("SELECT name FROM models;");
+        console.log(`${rows.length} existing models found.`);
+
+        // get the permutations
+        switch (cmd.generate) {
+            case "RMP": // RollingMidpointStrategy
+                const permutations = RollingMidpointStrategy.permutations();
+                console.log(`${permutations.length} permutations identified.`);
+                let count = 0;
+                for (let permutation of permutations) {
+                    const row = rows.find(row => row.name === permutation.name);
+                    if (row == null) {
+                        yield run("INSERT INTO models SET ?", {
+                            code: permutation.options.code,
+                            name: permutation.options.name,
+                            strategies: JSON.stringify([ permutation ]),
+                            ts: new Date(new Date().getTime() - (10 * 365 * 24 * 60 * 60 * 1000) + 0) // 10 yrs ago + random
+                        });
+                        count++;
+                    }
+                }
+                console.log(`${count} permutations stored.`);
+                break;
+        }
+
+        // close the database connection
+        global.pool.end();
+    });
+
+}
+
 // trains and scores all the models
 if (cmd.hasOwnProperty("score")) {
     sync(function* () {
 
-        let days = 30;
+        const st_ts = new Date();
+        let days = 90;
+        const start = new Date(new Date() - days * 24 * 60 * 60 * 1000);
+        const end = new Date();
 
-        const model1 = new RollingMidpointStrategy({
+        const steady = new RollingMidpointStrategy({
             name: "willy_coyote",
             code: "ETH",
-            think: 4 * 60 * 60 * 1000,
-            consider: 4 * 60 * 60 * 1000,
-            a: 1,
-            b: 0,
+            thinktime: 16 * 60 * 60 * 1000,
+            consider: 16 * 60 * 60 * 1000,
+            a: 2/3,
+            b: 1/3,
             c: 0,
             d: 0,
             e: 0,
-            range: 10
+            range: 30,
+            maxhold: 20 * 24 * 60 * 60 * 1000  // 20 days
         });
-        const start = new Date(new Date() - days * 24 * 60 * 60 * 1000);
-        const end = new Date();
-        yield model1.cache(start, end);
+        yield steady.load(start, end);
+
+        const trending = new TrendingStrategy({
+            name: "bodacious_dinosaur",
+            code: "ETH",
+            period: 2 * 60 * 60 * 1000, // 2 hours
+            rising: 0.01,
+            falling: -0.01,
+            maxhold: 21 * 24 * 60 * 60 * 1000 // 21 days
+        });
+        yield trending.load(start, end);
+
+        const rapid = new RapidChangeStrategy({
+            name: "cantankerous_hillbilly",
+            code: "ETH",
+            windows: [
+                { to: "fall", period: 1 * 60 * 60 * 1000, chg: -0.02 },
+                { to: "fall", period: 2 * 60 * 60 * 1000, chg: -0.04 },
+                { to: "fall", period: 3 * 60 * 60 * 1000, chg: -0.05 },
+                { to: "rise", period: 2 * 60 * 60 * 1000, chg: 0.02 },
+                { to: "rise", period: 4 * 60 * 60 * 1000, chg: 0.04 },
+                { to: "rise", period: 6 * 60 * 60 * 1000, chg: 0.05 },
+                { to: "stable", period: 36 * 60 * 60 * 1000, chg: 0.01 }
+            ]
+        });
+        yield rapid.load(start, end);
+
         const simulator = new SimulationManager({
             code: "ETH",
             funds: 33000,
             fee: 0.0025,
-            strategy: model1
+            strategies: [ rapid, trending ]
         });
+
         const window = new Window({
             code: "ETH",
             start: start,
@@ -220,12 +298,16 @@ if (cmd.hasOwnProperty("score")) {
         });
         const pricesInTime = yield window.load();
         for (let priceInTime of pricesInTime) {
-            yield simulator.update(priceInTime);
+            yield simulator.update(priceInTime).catch(ex => {
+                console.error(ex);
+            });
         }
         const calc = simulator.calc;
-        console.log("profit: " + calc.profit + " (g:" + calc.good + " / b:" + calc.bad + "); per week: " + calc.profit / days * 7);
+        console.log("profit: " + calc.profit + ", value: " + calc.value + " (g:" + calc.good + " / b:" + calc.bad + "); per week: " + calc.profit / days * 7);
 
         global.pool.end();
+
+        console.log("simulation took: " + new Date().getTime() - st_ts.getTime());
     
     });
 }

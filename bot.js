@@ -95,13 +95,10 @@ class Coin {
                             const now = new Date().getTime();
                             self.windows.forEach(window => {
                                 if (window.isInMemory) {
-
-                                    // NOTE: change this to go through a method
-                                    window.values.push({
+                                    window.push({
                                         ts: now,
                                         price: parseFloat(event.price)
                                     });
-
                                 }
                             });
 
