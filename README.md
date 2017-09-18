@@ -5,6 +5,16 @@ docker run --name mysql -v c:/volumes/mysql:/var/lib/mysql -v c:/volumes/mysql.c
 
 docker exec -it mysql mysql -uroot -p --socket /tmp/mysql.sock
 
+## Revised
+
+### TODO
+
+* stop-loss
+* trailing stop-loss
+* unrealized report for taxes
+
+
+
 ## Strategies
 
 * manual trades - to see how I scored

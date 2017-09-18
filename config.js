@@ -8,7 +8,7 @@ const request = require("request");
 
 // libraries
 const RollingMidpointStrategy = require("./lib/RollingMidpointStrategy.js");
-const RapidChangeStrategy = require("./lib/RapidChangeStrategy.js");
+const SlopeDetectionStrategy = require("./lib/SlopeDetectionStrategy.js");
 const TrendingStrategy = require("./lib/TrendingStrategy.js");
 const SimulationManager = require("./lib/SimulationManager.js");
 const Window = require("./lib/Window.js");
@@ -244,21 +244,15 @@ if (cmd.hasOwnProperty("score")) {
         const start = new Date(new Date() - days * 24 * 60 * 60 * 1000);
         const end = new Date();
 
-        const steady = new RollingMidpointStrategy({
+        const slope = new SlopeDetectionStrategy({
             name: "willy_coyote",
             code: "ETH",
-            thinktime: 16 * 60 * 60 * 1000,
-            consider: 16 * 60 * 60 * 1000,
-            a: 2/3,
-            b: 1/3,
-            c: 0,
-            d: 0,
-            e: 0,
-            range: 30,
-            maxhold: 20 * 24 * 60 * 60 * 1000  // 20 days
+            period: 2 * 60 * 60 * 1000,  // 2 hours
+            periods: 3
         });
-        yield steady.load(start, end);
+        yield slope.load(start, end);
 
+        /*
         const trending = new TrendingStrategy({
             name: "bodacious_dinosaur",
             code: "ETH",
@@ -283,12 +277,13 @@ if (cmd.hasOwnProperty("score")) {
             ]
         });
         yield rapid.load(start, end);
+        */
 
         const simulator = new SimulationManager({
             code: "ETH",
             funds: 33000,
             fee: 0.0025,
-            strategies: [ rapid, trending ]
+            strategy: slope
         });
 
         const window = new Window({
@@ -307,7 +302,7 @@ if (cmd.hasOwnProperty("score")) {
 
         global.pool.end();
 
-        console.log("simulation took: " + new Date().getTime() - st_ts.getTime());
+        //console.log("simulation took: " + new Date().getTime() - st_ts.getTime());
     
     });
 }
