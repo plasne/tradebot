@@ -4,13 +4,10 @@ const config = require("config");
 const cmd = require("commander");
 const ipc = require("node-ipc");
 const mysql = require("mysql");
-const request = require("request");
+const request = require("request-promise");
+const Promise = require("bluebird");
 
 // libraries
-const RollingMidpointStrategy = require("./lib/RollingMidpointStrategy.js");
-const SlopeDetectionStrategy = require("./lib/SlopeDetectionStrategy.js");
-const TrendingStrategy = require("./lib/TrendingStrategy.js");
-const SimulationManager = require("./lib/SimulationManager.js");
 const Window = require("./lib/Window.js");
 
 // create a connection pool to the database
@@ -21,19 +18,6 @@ global.pool = mysql.createPool({
     password: config.get("db.password"),
     database: config.get("db.name")
 });
-
-// create a function that can process synchronously
-//   see: http://www.tivix.com/blog/making-promises-in-a-synchronous-manner/
-const sync = fn => {
-    let iterator = fn();
-    let loop = result => {
-        !result.done && result.value.then(
-            res => loop(iterator.next(res)),
-            err => loop(iterator.throw(err))
-        );
-    };
-    loop(iterator.next());
-};
 
 // setup command line arguments
 cmd
@@ -46,6 +30,9 @@ cmd
     .option("--debug", "toggles the debug status of the running bot")
     .option("--generate <value>", "populates the database with a variety of strategies")
     .option("--score", "scores all the models on the last 3 months of data")
+    .option("--buy", "submits a buy")
+    .option("--sell", "submits a sell")
+    .option("--cancel", "cancel open orders")
     .parse(process.argv);
 
 // default the database
@@ -81,14 +68,20 @@ if (cmd.hasOwnProperty("create") && cmd.db) {
         password: config.get("db.password")
     });
 
-    // run all commands
-    sync(function* () {
-        yield run(`CREATE DATABASE ${cmd.db};`, null, db);
-        yield run(`USE ${cmd.db};`, null, db);
-        yield run("CREATE TABLE coinprice (id INT NOT NULL PRIMARY KEY AUTO_INCREMENT, ts TIMESTAMP, code VARCHAR(8), price DECIMAL(13,4));", null, db);
-        yield run("CREATE TABLE models (id INT NOT NULL PRIMARY KEY AUTO_INCREMENT, code VARCHAR(8), name VARCHAR(255), strategies TEXT, score INT, ts TIMESTAMP)", null, db);
-        db.end();
+    // run all commands in sequence
+    Promise.resolve()
+    .then(() => run(`CREATE DATABASE ${cmd.db};`, null, db))
+    .then(() => run(`USE ${cmd.db};`, null, db))
+    .then(() => run("CREATE TABLE coinprice (id INT NOT NULL PRIMARY KEY AUTO_INCREMENT, ts TIMESTAMP, code VARCHAR(8), price DECIMAL(13,4));", null, db))
+    .then(() => run("CREATE TABLE models (id INT NOT NULL PRIMARY KEY AUTO_INCREMENT, code VARCHAR(8), name VARCHAR(255), strategies TEXT, score INT, ts TIMESTAMP)", null, db))
+    .then(() => run("CREATE TABLE orders (id INT NOT NULL PRIMARY KEY AUTO_INCREMENT, exchange VARCHAR(50), guid VARCHAR(50), code VARCHAR(8), type VARCHAR(20), volume DECIMAL(13,4), price DECIMAL(13,4), ts TIMESTAMP)", null, db))
+    .then(() => {
         console.log("database and tables created.");
+    }).finally(() => {
+        db.end();
+    }).catch(ex => {
+        console.error(ex);
+        process.exit();
     });
 
 }
@@ -199,6 +192,7 @@ if (cmd.hasOwnProperty("debug")) {
     });
 }
 
+/*
 // generates a bunch of models
 if (cmd.generate) {
     sync(function* () {
@@ -252,7 +246,6 @@ if (cmd.hasOwnProperty("score")) {
         });
         yield slope.load(start, end);
 
-        /*
         const trending = new TrendingStrategy({
             name: "bodacious_dinosaur",
             code: "ETH",
@@ -277,8 +270,7 @@ if (cmd.hasOwnProperty("score")) {
             ]
         });
         yield rapid.load(start, end);
-        */
-
+  
         const simulator = new SimulationManager({
             code: "ETH",
             funds: 33000,
@@ -305,4 +297,29 @@ if (cmd.hasOwnProperty("score")) {
         //console.log("simulation took: " + new Date().getTime() - st_ts.getTime());
     
     });
+}
+*/
+
+if (cmd.hasOwnProperty("buy")) {
+    sendToBot("buy").then(buy => {
+        console.log(buy);
+    }, error => {
+        console.error(error);
+    });    
+}
+
+if (cmd.hasOwnProperty("sell")) {
+    sendToBot("sell").then(sell => {
+        console.log(sell);
+    }, error => {
+        console.error(error);
+    });    
+}
+
+if (cmd.hasOwnProperty("cancel")) {
+    sendToBot("cancel").then(cancel => {
+        console.log(cancel);
+    }, error => {
+        console.error(error);
+    });    
 }
