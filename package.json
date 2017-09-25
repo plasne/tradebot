@@ -4,6 +4,7 @@
   "description": "",
   "main": "bot.js",
   "dependencies": {
+    "bluebird": "^3.5.0",
     "commander": "^2.11.0",
     "config": "^1.26.2",
     "express": "^4.15.4",
