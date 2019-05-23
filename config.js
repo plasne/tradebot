@@ -22,31 +22,25 @@ global.pool = mysql.createPool({
 // setup command line arguments
 cmd
     .version("0.1.0")
-    .option("--init", "describes any initialization tasks")
-    .option("--create", "create a database")
     .option("--db <value>", "specifies the name of the database")
-    .option("--populate <value>", "populate the database with a specified dataset")
-    .option("--status", "gets the feed status for all coins from a running bot")
-    .option("--debug", "toggles the debug status of the running bot")
     .option("--generate <value>", "populates the database with a variety of strategies")
-    .option("--score", "scores all the models on the last 3 months of data")
-    .option("--buy", "submits a buy")
-    .option("--sell", "submits a sell")
-    .option("--cancel", "cancel open orders")
-    .parse(process.argv);
+    .option("--score", "scores all the models on the last 3 months of data");
 
 // default the database
 if (!cmd.db) cmd.db = config.get("db.name");
 
 // show initialization commands
-if (cmd.hasOwnProperty("init")) {
-    console.log("To create a user on MySQL:")
-    console.log("  CREATE USER 'user'@'host' IDENTIFIED BY 'password';");
-    console.log("  GRANT ALL PRIVILEGES ON *.* TO 'user'@'host';");
-}
+cmd
+    .command("init")
+    .description("Describes any initialization tasks.")
+    .action(_ => {
+        console.log("To create a user on MySQL:")
+        console.log("  CREATE USER 'user'@'host' IDENTIFIED BY 'password';");
+        console.log("  GRANT ALL PRIVILEGES ON *.* TO 'user'@'host';");
+    });
 
 // function to run a single query command
-const run = (query, values, db) => new Promise((resolve, reject) => {
+const run = async (query, values, db) => new Promise((resolve, reject) => {
     const connection = (db || global.pool);
     connection.query(query, values, (error, results, fields) => {
         if (!error) {
@@ -58,98 +52,108 @@ const run = (query, values, db) => new Promise((resolve, reject) => {
 });
 
 // create the database and schema
-if (cmd.hasOwnProperty("create") && cmd.db) {
+cmd
+    .command("create")
+    .description("Create a database.")
+    .action(_ => {
 
-    // connect to the database server
-    const db = mysql.createPool({
-        host: config.get("db.host"),
-        port: config.get("db.port"),
-        user: config.get("db.user"),
-        password: config.get("db.password")
+        // create an async function and run it
+        const create = async function() {
+
+            // connect to the database server
+            const db = mysql.createPool({
+                host: config.get("db.host"),
+                port: config.get("db.port"),
+                user: config.get("db.user"),
+                password: config.get("db.password")
+            });
+
+            // run all commands in sequence
+            try {
+                //await run(`CREATE DATABASE ${cmd.db};`, null, db);
+                await run(`USE ${cmd.db};`, null, db);
+                //await run("CREATE TABLE coinprice (id INT NOT NULL PRIMARY KEY AUTO_INCREMENT, ts TIMESTAMP, code VARCHAR(8), price DECIMAL(13,4));", null, db);
+                //await run("CREATE TABLE models (id INT NOT NULL PRIMARY KEY AUTO_INCREMENT, code VARCHAR(8), name VARCHAR(255), strategies TEXT, score INT, ts TIMESTAMP)", null, db);
+                await run("CREATE TABLE orders (id INT NOT NULL PRIMARY KEY AUTO_INCREMENT, exchange VARCHAR(50), guid VARCHAR(50), code VARCHAR(8), type VARCHAR(20), volume DECIMAL(13,4), price DECIMAL(13,4), ts TIMESTAMP)", null, db);
+                console.log("Database and tables created.");
+            } catch (ex) {
+                console.error(ex);
+            } finally {
+                db.end();
+            }
+
+        };
+        create();
+
     });
-
-    // run all commands in sequence
-    Promise.resolve()
-    .then(() => run(`CREATE DATABASE ${cmd.db};`, null, db))
-    .then(() => run(`USE ${cmd.db};`, null, db))
-    .then(() => run("CREATE TABLE coinprice (id INT NOT NULL PRIMARY KEY AUTO_INCREMENT, ts TIMESTAMP, code VARCHAR(8), price DECIMAL(13,4));", null, db))
-    .then(() => run("CREATE TABLE models (id INT NOT NULL PRIMARY KEY AUTO_INCREMENT, code VARCHAR(8), name VARCHAR(255), strategies TEXT, score INT, ts TIMESTAMP)", null, db))
-    .then(() => run("CREATE TABLE orders (id INT NOT NULL PRIMARY KEY AUTO_INCREMENT, exchange VARCHAR(50), guid VARCHAR(50), code VARCHAR(8), type VARCHAR(20), volume DECIMAL(13,4), price DECIMAL(13,4), ts TIMESTAMP)", null, db))
-    .then(() => {
-        console.log("database and tables created.");
-    }).finally(() => {
-        db.end();
-    }).catch(ex => {
-        console.error(ex);
-        process.exit();
-    });
-
-}
 
 // populate the database with data from a specific data set
-if (cmd.populate && cmd.db) {
+cmd
+    .command("populate <query>")
+    .description("Populate the database with a specified dataset.")
+    .action(query => {
 
-    // the function to fetch the data
-    const fetch = (url) => new Promise((resolve, reject) => {
-        console.log(`fetching ${url}...`);
-        request.get({
-            url: url,
-            json: true
-        }, (error, response, body) => {
-            if (!error && response.statusCode == 200) {
-                console.log(`${body.prices.length} prices found.`);
-                resolve(body.prices);
-            } else if (error) {
-                reject(error);
-            } else {
-                reject(new Error(`could not read the dataset: ${response.statusMessage}`));
-            }
-        });
-    });
-
-    // the function to build queries
-    const build = (code, prices) => new Promise(resolve => {
-        const queries = [];
-        prices.forEach(price => {
-            queries.push([
-                "INSERT INTO coinprice SET ?;",
-                {
-                    ts: new Date(price[0]),
-                    code: code,
-                    price: price[1]
+        // the function to fetch the data
+        const fetch = (url) => new Promise((resolve, reject) => {
+            console.log(`fetching ${url}...`);
+            request.get({
+                url: url,
+                json: true
+            }, (error, response, body) => {
+                if (!error && response.statusCode == 200) {
+                    console.log(`${body.prices.length} prices found.`);
+                    resolve(body.prices);
+                } else if (error) {
+                    reject(error);
+                } else {
+                    reject(new Error(`could not read the dataset: ${response.statusMessage}`));
                 }
-            ]);
+            });
         });
-        resolve(queries);
-    });
 
-    // determine the period
-    const period = (() => {
-        switch (cmd.populate) {
-            case "1d": return "24%20Hour";
-            case "1y": return "1%20Year";
-            case "3m": return "3%20Month";
-        }
-    })();
+        // the function to build queries
+        const build = (code, prices) => new Promise(resolve => {
+            const queries = [];
+            prices.forEach(price => {
+                queries.push([
+                    "INSERT INTO coinprice SET ?;",
+                    {
+                        ts: new Date(price[0]),
+                        code: code,
+                        price: price[1]
+                    }
+                ]);
+            });
+            resolve(queries);
+        });
 
-    // run the job
-    sync(function* () {
-        const coins = [
-            { code: "ETH", url: `https://ethereumprice.org/wp-content/themes/theme/inc/exchanges/json.php?cur=ethusd&ex=waex&time=${period}` },
-            { code: "BTC", url: `https://ethereumprice.org/wp-content/themes/theme/inc/exchanges/json.php?cur=btcusd&ex=waex&time=${period}` }
-        ];
-        for (let coin of coins) {
-            const prices = yield fetch(coin.url);
-            const queries = yield build(coin.code, prices);
-            for (let query of queries) {
-                yield run(...query);
+        // determine the period
+        const period = (() => {
+            switch (cmd.populate) {
+                case "1d": return "24%20Hour";
+                case "1y": return "1%20Year";
+                case "3m": return "3%20Month";
             }
-        }
-        pool.end();
-        console.log("data imported.");
-    });
+        })();
 
-}
+        // run the job
+        sync(function* () {
+            const coins = [
+                { code: "ETH", url: `https://ethereumprice.org/wp-content/themes/theme/inc/exchanges/json.php?cur=ethusd&ex=waex&time=${period}` },
+                { code: "BTC", url: `https://ethereumprice.org/wp-content/themes/theme/inc/exchanges/json.php?cur=btcusd&ex=waex&time=${period}` }
+            ];
+            for (let coin of coins) {
+                const prices = yield fetch(coin.url);
+                const queries = yield build(coin.code, prices);
+                for (let query of queries) {
+                    yield run(...query);
+                }
+            }
+            pool.end();
+            console.log("data imported.");
+        });
+
+    });
 
 // send a command to the locally running bot
 function sendToBot(command) {
@@ -175,22 +179,28 @@ function sendToBot(command) {
 }
 
 // gets the coin feed status from the locally running bot
-if (cmd.hasOwnProperty("status")) {
-    sendToBot("status").then(status => {
-        console.log(status);
-    }, error => {
-        console.error(error);
+cmd
+    .command("status")
+    .description("Gets the status of all feeds from the running bot.")
+    .action(_ => {
+        sendToBot("status").then(status => {
+            console.log(status);
+        }, error => {
+            console.error(error);
+        });
     });
-}
 
 // toggle debug on the locally running bot
-if (cmd.hasOwnProperty("debug")) {
-    sendToBot("debug").then(debug => {
-        console.log(debug);
-    }, error => {
-        console.error(error);
+cmd
+    .command("debug")
+    .description("Toggles the debug flag on the running bot.")
+    .action(_ => {
+        sendToBot("debug").then(debug => {
+            console.log(debug);
+        }, error => {
+            console.error(error);
+        });
     });
-}
 
 /*
 // generates a bunch of models
@@ -300,26 +310,38 @@ if (cmd.hasOwnProperty("score")) {
 }
 */
 
-if (cmd.hasOwnProperty("buy")) {
-    sendToBot("buy").then(buy => {
-        console.log(buy);
-    }, error => {
-        console.error(error);
-    });    
-}
+cmd
+    .command("buy")
+    .description("Submits a buy.")
+    .action(_ => {
+        sendToBot("buy").then(buy => {
+            console.log(buy);
+        }, error => {
+            console.error(error);
+        });
+    });
 
-if (cmd.hasOwnProperty("sell")) {
-    sendToBot("sell").then(sell => {
-        console.log(sell);
-    }, error => {
-        console.error(error);
-    });    
-}
+cmd
+    .command("sell")
+    .description("Submits a sell.")
+    .action(_ => {
+        sendToBot("sell").then(sell => {
+            console.log(sell);
+        }, error => {
+            console.error(error);
+        });
+    });
 
-if (cmd.hasOwnProperty("cancel")) {
-    sendToBot("cancel").then(cancel => {
-        console.log(cancel);
-    }, error => {
-        console.error(error);
-    });    
-}
+cmd
+    .command("cancel")
+    .description("Cancels all orders.")
+    .action(_ => {
+        sendToBot("cancel").then(cancel => {
+            console.log(cancel);
+        }, error => {
+            console.error(error);
+        });
+    });
+
+// parse all commands
+cmd.parse(process.argv);
