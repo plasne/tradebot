@@ -6,7 +6,7 @@
   "dependencies": {
     "bluebird": "^3.5.0",
     "commander": "^2.11.0",
-    "config": "^1.26.2",
+    "config": "^3.3.8",
     "express": "^4.15.4",
     "import-export": "^1.0.1",
     "mysql": "^2.14.1",
